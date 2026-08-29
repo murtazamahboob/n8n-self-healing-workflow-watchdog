@@ -1,0 +1,170 @@
+{
+  "name": "Self-Healing Workflow Watchdog (LangChain OpenAI + Telegram)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "8e5a7e1d-6724-45d6-99a6-39e3898a6f38",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [-2832, 1008]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "f1", "name": "workflowName", "type": "string", "value": "={{ $json.workflow?.name || 'Unknown workflow' }}" },
+            { "id": "f2", "name": "workflowId", "type": "string", "value": "={{ $json.workflow?.id || '' }}" },
+            { "id": "f3", "name": "executionId", "type": "string", "value": "={{ $json.execution?.id || '' }}" },
+            { "id": "f4", "name": "executionUrl", "type": "string", "value": "={{ $json.execution?.url || '' }}" },
+            { "id": "f5", "name": "failedNode", "type": "string", "value": "={{ $json.execution?.lastNodeExecuted || 'Unknown node' }}" },
+            { "id": "f6", "name": "errorMessage", "type": "string", "value": "={{ $json.execution?.error?.message || 'No error message available' }}" },
+            { "id": "f7", "name": "errorStack", "type": "string", "value": "={{ ($json.execution?.error?.stack || '').toString().slice(0, 1500) }}" },
+            { "id": "f8", "name": "mode", "type": "string", "value": "={{ $json.execution?.mode || '' }}" },
+            { "id": "f9", "name": "timestamp", "type": "string", "value": "={{ $now.toISO() }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6a9ffdb6-cf0f-4bc5-82ac-caf94069a61b",
+      "name": "Extract Error Context",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-2608, 1008]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Workflow: {{ $json.workflowName }}\nFailed node: {{ $json.failedNode }}\nExecution mode: {{ $json.mode }}\nError message: {{ $json.errorMessage }}\nError stack (truncated): {{ $json.errorStack }}\n\nAct as a senior n8n workflow developer and production reliability expert. Do the following:\n1. Classify the failure into exactly one of: EXPIRED_AUTH, RATE_LIMIT, BAD_INPUT_DATA, MALFORMED_API_RESPONSE, TIMEOUT, PERMISSION_DENIED, CONFIGURATION_ERROR, UNKNOWN.\n2. Explain the root cause in one plain-English sentence a non-technical person could understand.\n3. Decide if this is safely fixable by simply re-running the execution (true only for RATE_LIMIT or TIMEOUT, otherwise false).\n4. Give a severity rating: LOW, MEDIUM, or HIGH (HIGH = actively blocking real users right now).\n5. Give 2-4 short, concrete, numbered steps a non-technical person could follow themselves inside n8n to fix this specific error, in plain English, no jargon.\n\nRespond with ONLY valid JSON matching exactly this shape, no markdown fences, no preamble:\n{\"category\": \"...\", \"explanation\": \"...\", \"retryable\": true, \"severity\": \"...\", \"fix_steps\": [\"...\", \"...\"]}",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are a senior n8n developer, workflow architect, and production reliability expert. You diagnose workflow failures precisely and give clear, actionable, beginner-friendly fix instructions. Always respond with strict JSON only, no markdown fences, no preamble."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "76de8016-db8d-4dc7-9860-9d07d9b273b8",
+      "name": "AI Diagnosis (LLM Chain)",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [-2384, 1008]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o-mini"
+        },
+        "options": {}
+      },
+      "id": "c07d9118-7501-46ab-814e-17d19016a42b",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [-2384, 1184],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const prev = $('Extract Error Context').first().json;\nconst out = $input.first().json;\n\nlet raw = '';\ntry {\n  raw = out.text\n     || out.output\n     || out.message?.content\n     || out.choices?.[0]?.message?.content\n     || out.output_text\n     || out.content?.[0]?.text\n     || '';\n} catch (e) {\n  raw = '';\n}\n\nraw = String(raw).replace(/```json/gi, '').replace(/```/g, '').trim();\n\nlet diagnosis;\ntry {\n  diagnosis = JSON.parse(raw);\n} catch (e) {\n  diagnosis = {\n    category: 'UNKNOWN',\n    explanation: 'The AI diagnosis could not be parsed. Raw error: ' + prev.errorMessage,\n    retryable: false,\n    severity: 'MEDIUM',\n    fix_steps: ['Open the failed execution in n8n and review the error manually.']\n  };\n}\n\nconst steps = Array.isArray(diagnosis.fix_steps) ? diagnosis.fix_steps : [];\nconst fixStepsText = steps.map((s, i) => `${i + 1}. ${s}`).join('\\n');\n\nreturn [{\n  json: {\n    ...prev,\n    category: diagnosis.category || 'UNKNOWN',\n    explanation: diagnosis.explanation || 'No explanation returned.',\n    retryable: diagnosis.retryable === true,\n    severity: diagnosis.severity || 'MEDIUM',\n    fixStepsText: fixStepsText || 'Review the execution manually.'\n  }\n}];"
+      },
+      "id": "77706ccf-1a9b-4115-9abe-7744067dc4f1",
+      "name": "Parse AI Diagnosis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2016, 1008]
+    },
+    {
+      "parameters": {
+        "chatId": "REPLACE_WITH_YOUR_TELEGRAM_CHAT_ID",
+        "text": "=\ud83d\udee0\ufe0f *Workflow Issue Detected*\n\n*Workflow:* {{ $json.workflowName }}\n*Failed step:* {{ $json.failedNode }}\n*Severity:* {{ $json.severity }}\n*Category:* {{ $json.category }}\n\n*What happened:*\n{{ $json.explanation }}\n\n*How to fix it:*\n{{ $json.fixStepsText }}\n\n{{ $json.retryable ? '\ud83d\udca1 This looks like a temporary glitch \u2014 try simply re-running the execution first.' : '\u26a0\ufe0f This needs the fix above before it will work again.' }}\n\n\ud83d\udd17 Execution: {{ $json.executionUrl }}",
+        "additionalFields": { "parse_mode": "Markdown" }
+      },
+      "id": "8069642a-b4e4-453d-8f90-a1610ea26171",
+      "name": "Telegram: Diagnosis & Fix Guide",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [-1712, 1008],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "REPLACE_WITH_YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.timestamp }}",
+            "workflowName": "={{ $json.workflowName }}",
+            "failedNode": "={{ $json.failedNode }}",
+            "category": "={{ $json.category }}",
+            "severity": "={{ $json.severity }}",
+            "retryable": "={{ $json.retryable }}",
+            "explanation": "={{ $json.explanation }}",
+            "fixStepsText": "={{ $json.fixStepsText }}",
+            "executionUrl": "={{ $json.executionUrl }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "a6e60bfc-0a53-499f-838d-4cad241ad5ab",
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [-1392, 1008],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [[{ "node": "Extract Error Context", "type": "main", "index": 0 }]]
+    },
+    "Extract Error Context": {
+      "main": [[{ "node": "AI Diagnosis (LLM Chain)", "type": "main", "index": 0 }]]
+    },
+    "AI Diagnosis (LLM Chain)": {
+      "main": [[{ "node": "Parse AI Diagnosis", "type": "main", "index": 0 }]]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [[{ "node": "AI Diagnosis (LLM Chain)", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "Parse AI Diagnosis": {
+      "main": [[{ "node": "Telegram: Diagnosis & Fix Guide", "type": "main", "index": 0 }]]
+    },
+    "Telegram: Diagnosis & Fix Guide": {
+      "main": [[{ "node": "Log to Google Sheets", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "pinData": {}
+}
